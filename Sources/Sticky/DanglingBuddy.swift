@@ -550,11 +550,24 @@ final class BuddyCanvasView: NSView {
         color.setStroke()
         color.setFill()
 
-        // Little arms: from the hands on the rope to the shoulders.
+        // Little arms: from the hands on the rope to the shoulders, as outward-bowing arcs so
+        // the elbows visibly stick out and they read as arms rather than extra rope.
         let arms = NSBezierPath()
         for side in [CGFloat(1), CGFloat(-1)] {
-            arms.move(to: CGPoint(x: hands.x + nx * side * 1.5, y: hands.y + ny * side * 1.5))
-            arms.line(to: CGPoint(x: shoulder.x + nx * side * 5, y: shoulder.y + ny * side * 5))
+            let hand = CGPoint(x: hands.x + nx * side * 1.5, y: hands.y + ny * side * 1.5)
+            let shoulderEnd = CGPoint(x: shoulder.x + nx * side * 5, y: shoulder.y + ny * side * 5)
+            // Elbow: halfway down the arm, pushed outward perpendicular to the torso axis.
+            let bulge: CGFloat = 7
+            let c1 = CGPoint(
+                x: hand.x * 0.65 + shoulderEnd.x * 0.35 + nx * side * bulge,
+                y: hand.y * 0.65 + shoulderEnd.y * 0.35 + ny * side * bulge
+            )
+            let c2 = CGPoint(
+                x: hand.x * 0.30 + shoulderEnd.x * 0.70 + nx * side * bulge,
+                y: hand.y * 0.30 + shoulderEnd.y * 0.70 + ny * side * bulge
+            )
+            arms.move(to: hand)
+            arms.curve(to: shoulderEnd, controlPoint1: c1, controlPoint2: c2)
         }
         arms.lineWidth = 1.6
         arms.lineCapStyle = .round

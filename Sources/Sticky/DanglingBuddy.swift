@@ -125,7 +125,7 @@ final class BuddySimulation {
     private static let bodyInvMass: CGFloat = 1.0 / 3.5
     private static let limbInvMass: CGFloat = 1.0 / 1.4
 
-    private static let torsoLength: CGFloat = 30
+    private static let torsoLength: CGFloat = 34
     private static let legLength: CGFloat = 20
     private static let legSpread: CGFloat = 15
 
@@ -165,6 +165,10 @@ final class BuddySimulation {
     private var elapsed: TimeInterval = 0
     private var phaseTime: TimeInterval = 0
     private var calmTime: TimeInterval = 0
+    /// Cut phase: the fallen part lies still on the floor, the fade may start.
+    private var settled = false
+    private var settleCalm: TimeInterval = 0
+    private var fadeElapsed: TimeInterval = 0
 
     /// From 0 (rolled up inside the knob) to 1 (fully unrolled).
     private var unroll: CGFloat = 0
@@ -214,11 +218,16 @@ final class BuddySimulation {
         return max(0, 1 - CGFloat(phaseTime / BuddySimulation.whipFade))
     }
 
-    /// Opacity of the fallen part plus the figure.
+    /// Opacity of the fallen part plus the figure. It falls at full opacity until it has come
+    /// to rest on the floor; only then does it fade out.
     var lowerAlpha: CGFloat {
         guard phase == .cut else { return 1 }
-        return max(0, 1 - CGFloat(phaseTime / BuddySimulation.fallFade))
+        return max(0, 1 - CGFloat(fadeElapsed / BuddySimulation.fallFade))
     }
+
+    /// Screen y below which nothing may fall: the bottom of the screen. Set by the owner when
+    /// the rope is cut.
+    var floorY: CGFloat?
 
     // MARK: - Interaction
 
@@ -292,7 +301,9 @@ final class BuddySimulation {
             if unroll <= 0 { isFinished = true }
         case .cut:
             unroll = 1
-            if phaseTime >= max(BuddySimulation.fallFade, BuddySimulation.whipFade) {
+            if settled { fadeElapsed += TimeInterval(dt) }
+            if fadeElapsed >= BuddySimulation.fallFade,
+               phaseTime >= BuddySimulation.whipFade {
                 isFinished = true
             }
         }
@@ -307,6 +318,8 @@ final class BuddySimulation {
         pts[0].p = anchor
         pts[0].prev = anchor
 
+        applyFloor()
+        updateSettle(dt: dt)
         updateSleep()
     }
 
@@ -393,6 +406,11 @@ final class BuddySimulation {
             calmTime = 0
             return
         }
+        // Never sleep during the cut phase: the fall and the fade have to keep running.
+        if phase == .cut {
+            calmTime = 0
+            return
+        }
         var energy: CGFloat = 0
         for i in 1..<pts.count {
             let dx = pts[i].p.x - pts[i].prev.x
@@ -406,6 +424,41 @@ final class BuddySimulation {
             }
         } else {
             calmTime = 0
+        }
+    }
+
+    /// Floor collision for the fallen part after the cut: bounce with some restitution, plus
+    /// friction along the floor so it slides to a stop instead of skating away.
+    private func applyFloor() {
+        guard phase == .cut, let floor = floorY, let cut = cutIndex else { return }
+        for i in (cut + 1)..<pts.count where pts[i].p.y < floor {
+            let vx = pts[i].p.x - pts[i].prev.x
+            let vy = pts[i].p.y - pts[i].prev.y
+            pts[i].p.y = floor
+            pts[i].prev.y = floor + vy * 0.45
+            pts[i].prev.x = pts[i].p.x - vx * 0.55
+        }
+    }
+
+    /// Marks the fallen part as settled once it has been (nearly) motionless for a moment, or
+    /// after a generous timeout in case it never comes to rest (no floor, endless jitter).
+    private func updateSettle(dt: CGFloat) {
+        guard phase == .cut, !settled, let cut = cutIndex else { return }
+        if phaseTime > 8 {
+            settled = true
+            return
+        }
+        var energy: CGFloat = 0
+        for i in (cut + 1)..<pts.count {
+            let dx = pts[i].p.x - pts[i].prev.x
+            let dy = pts[i].p.y - pts[i].prev.y
+            energy += dx * dx + dy * dy
+        }
+        if energy < 0.25 {
+            settleCalm += TimeInterval(dt)
+            if settleCalm >= 0.35 { settled = true }
+        } else {
+            settleCalm = 0
         }
     }
 
@@ -543,34 +596,34 @@ final class BuddyCanvasView: NSView {
         let ux = ax / len, uy = ay / len
         let nx = -uy, ny = ux                       // perpendicular to the torso axis
 
-        let head = CGPoint(x: hands.x + ux * len * 0.30, y: hands.y + uy * len * 0.30)
-        let shoulder = CGPoint(x: hands.x + ux * len * 0.56, y: hands.y + uy * len * 0.56)
+        // The head sits well below the hands, so the hands visibly grip the rope above it and
+        // the arms do not frame the head.
+        let head = CGPoint(x: hands.x + ux * len * 0.44, y: hands.y + uy * len * 0.44)
+        let shoulder = CGPoint(x: hands.x + ux * len * 0.66, y: hands.y + uy * len * 0.66)
         let headRadius: CGFloat = 5
 
         color.setStroke()
         color.setFill()
 
-        // Little arms: from the hands on the rope to the shoulders, as outward-bowing arcs so
-        // the elbows visibly stick out and they read as arms rather than extra rope.
+        // Little arms: from the hands on the rope to the shoulders. Two straight pieces with an
+        // elbow point sticking out read as bent arms; smooth symmetric curves would enclose the
+        // head in an oval instead.
         let arms = NSBezierPath()
         for side in [CGFloat(1), CGFloat(-1)] {
             let hand = CGPoint(x: hands.x + nx * side * 1.5, y: hands.y + ny * side * 1.5)
             let shoulderEnd = CGPoint(x: shoulder.x + nx * side * 5, y: shoulder.y + ny * side * 5)
-            // Elbow: halfway down the arm, pushed outward perpendicular to the torso axis.
-            let bulge: CGFloat = 7
-            let c1 = CGPoint(
-                x: hand.x * 0.65 + shoulderEnd.x * 0.35 + nx * side * bulge,
-                y: hand.y * 0.65 + shoulderEnd.y * 0.35 + ny * side * bulge
-            )
-            let c2 = CGPoint(
-                x: hand.x * 0.30 + shoulderEnd.x * 0.70 + nx * side * bulge,
-                y: hand.y * 0.30 + shoulderEnd.y * 0.70 + ny * side * bulge
+            // Elbow: at 45% down the arm, pushed outward past the head.
+            let elbow = CGPoint(
+                x: hand.x * 0.55 + shoulderEnd.x * 0.45 + nx * side * 6.5,
+                y: hand.y * 0.55 + shoulderEnd.y * 0.45 + ny * side * 6.5
             )
             arms.move(to: hand)
-            arms.curve(to: shoulderEnd, controlPoint1: c1, controlPoint2: c2)
+            arms.line(to: elbow)
+            arms.line(to: shoulderEnd)
         }
         arms.lineWidth = 1.6
         arms.lineCapStyle = .round
+        arms.lineJoinStyle = .round
         arms.stroke()
 
         // Body.
@@ -656,6 +709,8 @@ final class DanglingBuddyController {
     private var timer: Timer?
     private var isGrabbing = false
     private var hotCursorShown = false
+    /// Set on cut: the window is stretched down to this screen y so the fall stays visible.
+    private var fallFloor: CGFloat?
 
     /// Called when the rope cleans itself up (cut or rolled back up).
     var onFinish: (() -> Void)?
@@ -700,7 +755,15 @@ final class DanglingBuddyController {
             self.simulation.wake()
         }
         canvas.onCut = { [weak self] index in
-            self?.simulation.cut(at: index)
+            guard let self else { return }
+            // The figure falls to the bottom of the screen (the top of the Dock, if there is
+            // one), so the simulation gets a floor and the window is stretched down to it.
+            if let screen = self.window.screen ?? self.panel.screen ?? NSScreen.screens.first {
+                let floor = screen.visibleFrame.minY + 2
+                self.simulation.floorY = floor
+                self.fallFloor = floor
+            }
+            self.simulation.cut(at: index)
         }
 
         window.alphaValue = panel.alphaValue
@@ -759,10 +822,16 @@ final class DanglingBuddyController {
     private func tick() {
         // The window follows the note. As a child window it already moves along during a drag;
         // this re-check catches resizes and every other frame change.
-        let wanted = DanglingBuddyController.windowFrame(for: panel.frame)
+        var wanted = DanglingBuddyController.windowFrame(for: panel.frame)
+        if let floor = fallFloor {
+            // After the cut the window runs down to the floor, so the fall is not clipped.
+            let bottom = min(wanted.minY, floor - 40)
+            wanted = CGRect(x: wanted.minX, y: bottom, width: wanted.width, height: wanted.maxY - bottom)
+        }
         if abs(wanted.origin.x - window.frame.origin.x) > 0.5
             || abs(wanted.origin.y - window.frame.origin.y) > 0.5
-            || abs(wanted.width - window.frame.width) > 0.5 {
+            || abs(wanted.width - window.frame.width) > 0.5
+            || abs(wanted.height - window.frame.height) > 0.5 {
             window.setFrame(wanted, display: false)
         }
         // Take over the opacity of the note (hover, opacity slider, fades).

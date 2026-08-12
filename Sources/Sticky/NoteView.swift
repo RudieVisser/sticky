@@ -189,13 +189,22 @@ struct NoteView: View {
                 palette(note)
             }
 
-            TextField("Title", text: note.title)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
-                .frame(maxWidth: 130, alignment: .leading)
+            // The invisible Text gives the field the width of its content, so the title takes
+            // exactly the room it needs and only truncates when the header genuinely runs out
+            // of space; the drag zone next to it keeps a minimum width either way.
+            ZStack(alignment: .leading) {
+                Text(note.wrappedValue.title.isEmpty ? "Title" : note.wrappedValue.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .opacity(0)
+                    .padding(.trailing, 2)
+                TextField("Title", text: note.title)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+            }
 
             WindowDragHandle(isActivated: chrome.isActivated)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 36, maxWidth: .infinity, maxHeight: .infinity)
 
             if store.hasDoneLines(noteID) {
                 Button {
